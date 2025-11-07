@@ -1,139 +1,169 @@
+#include "httplib.h"
 #include <iostream>
 #include <thread>
 #include <vector>
 #include <atomic>
 #include <chrono>
 #include <random>
-#include <cstring>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <unistd.h>
+#include <string>
+#include "json.hpp"
 
-struct Stats {
-    std::atomic<uint64_t> success{0}, fail{0}, total_time_us{0};
-};
 
-void client_thread(int id, int duration_sec, const std::string& workload,
-                   const std::string& server_ip, Stats& stats) {
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return;
+// --- Configuration ---
+std::string SERVER_HOST = "127.0.0.1";
+int SERVER_PORT = 8080;
+int NUM_THREADS = 8;
+int DURATION_SECONDS = 30; // 5 minutes (300s) is long, use 30s for quick tests
+std::string WORKLOAD_TYPE = "get_popular"; // "put_all", "get_all", "get_popular", "get_put"
+// ---------------------
 
-    sockaddr_in serv_addr{};
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(8080);
-    inet_pton(AF_INET, server_ip.c_str(), &serv_addr.sin_addr);
+using json = nlohmann::json; // **FIXED:** Added using directive
 
-    if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        close(sock);
-        return;
-    }
+// Shared atomic counters
+std::atomic<long long> total_requests(0);
+std::atomic<long long> total_response_time_ms(0);
+std::atomic<bool> keep_running(true);
 
-    std::mt19937 gen(id);
-    std::uniform_int_distribution<> key_dist(1, 10000);
-    std::uniform_int_distribution<> op_dist(0, 99);
-    std::vector<std::string> popular_keys = {"key1", "key2", "key3", "key4", "key5"};
+// For 'get_popular' workload
+const int POPULAR_KEYS_COUNT = 50;
 
-    auto start = std::chrono::high_resolution_clock::now();
 
-    while (true) {
-        auto now = std::chrono::high_resolution_clock::now();
-        if (std::chrono::duration_cast<std::chrono::seconds>(now - start).count() >= duration_sec)
-            break;
+// --- Worker Thread Function ---
+void client_worker(int thread_id) {
+    // Each thread gets its own HTTP client and random number generator
+    httplib::Client cli(SERVER_HOST, SERVER_PORT);
+    cli.set_connection_timeout(5, 0); // 5-second timeout
+    cli.set_read_timeout(5, 0);
 
-        std::string key, method, path;
-        int op = op_dist(gen);
+    // Seed the random generator uniquely for each thread
+    std::mt19937 gen(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    std::uniform_int_distribution<> popular_dist(0, POPULAR_KEYS_COUNT - 1);
+    std::uniform_int_distribution<> random_dist(0, 1000000);
+    std::uniform_int_distribution<> mix_dist(0, 9); // For 70% get, 30% put
 
-        if (workload == "put_all") {
-            key = "key" + std::to_string(key_dist(gen));
-            method = "PUT";
-            path = "/kv/" + key + "?v=val" + std::to_string(gen());
-        } else if (workload == "get_all") {
-            key = "key" + std::to_string(key_dist(gen));
-            method = "GET";
-            path = "/kv/" + key;
-        } else if (workload == "get_popular") {
-            key = popular_keys[gen() % popular_keys.size()];
-            method = "GET";
-            path = "/kv/" + key;
-        } else { // mixed
-            if (op < 40) { // 40% put
-                key = "key" + std::to_string(key_dist(gen));
-                method = "PUT";
-                path = "/kv/" + key + "?v=val" + std::to_string(gen());
-            } else if (op < 95) { // 55% get
-                key = (op < 80) ? popular_keys[gen() % popular_keys.size()]
-                               : "key" + std::to_string(key_dist(gen));
-                method = "GET";
-                path = "/kv/" + key;
-            } else { // 5% delete
-                key = "key" + std::to_string(key_dist(gen));
-                method = "DELETE";
-                path = "/kv/" + key;
+    long thread_req_count = 0;
+
+    while (keep_running) {
+        std::string key;
+        std::string value;
+        std::string body;
+        httplib::Result res;
+        json j;
+
+        // Start timer
+        auto start = std::chrono::steady_clock::now();
+
+        try {
+            if (WORKLOAD_TYPE == "put_all") {
+                key = "key_t" + std::to_string(thread_id) + "_" + std::to_string(thread_req_count);
+                value = "val_" + std::to_string(random_dist(gen));
+                j = {{"key", key}, {"value", value}};
+                res = cli.Post("/kv", j.dump(), "application/json");
+
+            } else if (WORKLOAD_TYPE == "get_all") {
+                // Generates unique keys per thread to force cache misses
+                key = "key_t" + std::to_string(thread_id) + "_" + std::to_string(thread_req_count);
+                res = cli.Get("/kv/" + httplib::detail::encode_url(key));
+
+            } else if (WORKLOAD_TYPE == "get_popular") {
+                // Accesses one of K popular keys
+                key = "popular_key_" + std::to_string(popular_dist(gen));
+                res = cli.Get("/kv/" + httplib::detail::encode_url(key));
+
+            } else if (WORKLOAD_TYPE == "get_put") {
+                int op = mix_dist(gen);
+                if (op < 7) { // 70% GET (popular)
+                    key = "popular_key_" + std::to_string(popular_dist(gen));
+                    res = cli.Get("/kv/" + httplib::detail::encode_url(key));
+                } else { // 30% PUT
+                    key = "key_t" + std::to_string(thread_id) + "_" + std::to_string(thread_req_count);
+                    value = "val_" + std::to_string(random_dist(gen));
+                    j = {{"key", key}, {"value", value}};
+                    res = cli.Post("/kv", j.dump(), "application/json");
+                }
+            } else {
+                // Should not happen
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
             }
+
+            // End timer
+            auto end = std::chrono::steady_clock::now();
+
+            // Check response and update counters
+            // We count 404 (Not Found) as a "successful" round trip
+            if (res && (res->status == 200 || res->status == 201 || res->status == 404)) {
+                total_requests++;
+                total_response_time_ms += std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+            } else if (res) {
+                 // std::cerr << "HTTP Error: " << res->status << std::endl;
+            } else {
+                 // std::cerr << "Request failed: " << httplib::to_string(res.error()) << std::endl;
+            }
+
+        } catch (const std::exception& e) {
+            // std::cerr << "Exception in worker thread: " << e.what() << std::endl;
         }
 
-        std::string request = method + " " + path + " HTTP/1.1\r\n"
-                              "Host: " + server_ip + "\r\n"
-                              "Connection: keep-alive\r\n\r\n";
-
-        auto t1 = std::chrono::high_resolution_clock::now();
-        if (send(sock, request.c_str(), request.size(), 0) <= 0) {
-            stats.fail++;
-            continue;
-        }
-
-        char buffer[4096];
-        int n = recv(sock, buffer, sizeof(buffer)-1, 0);
-        auto t2 = std::chrono::high_resolution_clock::now();
-
-        if (n > 0) {
-            buffer[n] = '\0';
-            stats.success++;
-            auto us = std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count();
-            stats.total_time_us += us;
-        } else {
-            stats.fail++;
-        }
+        thread_req_count++;
+        // Closed-loop: This thread waits for the response before sending the next request.
     }
-    close(sock);
 }
 
+// --- Main Function ---
 int main(int argc, char* argv[]) {
-    if (argc != 5) {
-        std::cout << "Usage: ./loadgen <server_ip> <threads> <duration_sec> <workload>\n";
-        std::cout << "workload: put_all | get_all | get_popular | mixed\n";
+    if (argc != 6) {
+        std::cerr << "Usage: ./load_gen <host> <port> <threads> <duration_sec> <workload_type>" << std::endl;
+        std::cerr << "Workload types: put_all, get_all, get_popular, get_put" << std::endl;
         return 1;
     }
 
-    std::string server_ip = argv[1];
-    int threads = std::stoi(argv[2]);
-    int duration = std::stoi(argv[3]);
-    std::string workload = argv[4];
+    SERVER_HOST = argv[1];
+    SERVER_PORT = std::stoi(argv[2]);
+    NUM_THREADS = std::stoi(argv[3]);
+    DURATION_SECONDS = std::stoi(argv[4]);
+    WORKLOAD_TYPE = argv[5];
 
-    Stats stats;
-    std::vector<std::thread> clients;
+    std::cout << "Starting load generator..." << std::endl;
+    std::cout << "  Target: " << SERVER_HOST << ":" << SERVER_PORT << std::endl;
+    std::cout << "  Threads: " << NUM_THREADS << std::endl;
+    std::cout << "  Duration: " << DURATION_SECONDS << " seconds" << std::endl;
+    std::cout << "  Workload: " << WORKLOAD_TYPE << std::endl;
 
-    auto start = std::chrono::steady_clock::now();
+    std::vector<std::thread> threads;
+    threads.reserve(NUM_THREADS);
 
-    for (int i = 0; i < threads; ++i) {
-        clients.emplace_back(client_thread, i, duration, workload, server_ip, std::ref(stats));
+    // Launch worker threads
+    for (int i = 0; i < NUM_THREADS; ++i) {
+        threads.emplace_back(client_worker, i);
     }
 
-    for (auto& t : clients) t.join();
+    // Run for the specified duration
+    std::this_thread::sleep_for(std::chrono::seconds(DURATION_SECONDS));
 
-    auto end = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(end - start).count();
+    // Stop all threads
+    keep_running = false;
 
-    double throughput = stats.success / elapsed;
-    double avg_rt = stats.success > 0 ? (stats.total_time_us / stats.success) / 1000.0 : 0;
+    // Wait for all threads to finish
+    for (auto& t : threads) {
+        t.join();
+    }
 
-    std::cout << "\n=== Load Test Results ===\n";
-    std::cout << "Workload: " << workload << "\n";
-    std::cout << "Threads: " << threads << "\n";
-    std::cout << "Duration: " << duration << "s\n";
-    std::cout << "Throughput: " << throughput << " req/s\n";
-    std::cout << "Avg Response Time: " << avg_rt << " ms\n";
-    std::cout << "Success: " << stats.success << ", Fail: " << stats.fail << "\n";
+    std::cout << "\n--- Load test finished ---" << std::endl;
+
+    // Calculate and display metrics
+    double duration_actual = DURATION_SECONDS;
+    long long total_req = total_requests.load();
+    long long total_time = total_response_time_ms.load();
+
+    double avg_throughput = (total_req > 0) ? (total_req / duration_actual) : 0;
+    double avg_response_time = (total_req > 0) ? (static_cast<double>(total_time) / total_req) : 0;
+
+    std::cout << "Total Requests: " << total_req << std::endl;
+    std::cout << "Total Test Time: " << duration_actual << " s" << std::endl;
+    std::cout << "----------------------------------" << std::endl;
+    std::cout << "Average Throughput: " << avg_throughput << " req/sec" << std::endl;
+    std::cout << "Average Response Time: " << avg_response_time << " ms" << std::endl;
 
     return 0;
 }

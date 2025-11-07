@@ -1,10 +1,10 @@
-#include "httplib.h"
+#include "../include/httplib.h"
 #include "lru_cache.h"
 #include <pqxx/pqxx>
 #include <thread>
 #include <iostream>
 #include <optional>
-#include "json.hpp"
+#include "../include/json.hpp"
 
 // --- Configuration ---
 const int SERVER_PORT = 8080;

@@ -1,18 +1,21 @@
 # HTTP KV Cache Server
 
-This project implements a simple HTTP-based key-value cache server using C++ with PostgreSQL as the backend storage. It supports basic CRUD operations over HTTP and is designed for benchmarking with a load generator.
+This project implements a multi-threaded HTTP-based key-value (KV) store server in C++ with PostgreSQL as the persistent backend and an in-memory LRU cache for performance optimization. It supports RESTful CRUD operations (Create via POST, Read via GET, Delete via DELETE) and includes a closed-loop load generator for benchmarking throughput and latency under various workloads.
+
+The system follows a client-server architecture with separated concerns: the server handles concurrent requests using a thread pool, caches frequent accesses in memory, and persists data to PostgreSQL. The load generator emulates multiple clients to stress-test the server, generating configurable workloads (e.g., read-heavy, write-heavy, mixed) without user input or file-based requests.
 
 ## Features
-- HTTP server for key-value operations (GET, PUT, DELETE).
-- PostgreSQL integration for persistent storage.
-- Multi-threaded support.
-- Load generation for performance testing.
+- **RESTful HTTP API**: Supports POST (create), GET (read), DELETE (delete) for KV pairs.
+- **In-Memory LRU Cache**: Evicts least recently used items on overflow (capacity: 100 by default) to reduce database hits.
+- **PostgreSQL Backend**: Persistent storage with ACID transactions for create/read/delete.
+- **Multi-Threaded Server**: Uses a configurable thread pool (16 threads by default) for concurrency.
+- **Load Generator**: Multi-threaded client for automated benchmarking with metrics (throughput, response time) and workloads (e.g., "get all", "put all", "get popular", "mixed").
 
 ## Prerequisites
-- Ubuntu/Debian-based system (or compatible Linux distribution).
-- PostgreSQL server.
-- C++ compiler (g++ with C++17 support).
-- libpqxx (PostgreSQL C++ client library).
+- Ubuntu/Debian-based system (tested on 22.04 LTS) or compatible Linux distribution.
+- PostgreSQL 14+ server.
+- C++17 compiler (g++ 11+ or clang++).
+- Libraries: `libpqxx-dev` (PostgreSQL C++ client), `cpp-httplib` (header-only HTTP library), `nlohmann/json` (header-only JSON).
 
 ## Installation
 

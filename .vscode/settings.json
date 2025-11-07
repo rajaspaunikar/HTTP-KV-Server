@@ -76,6 +76,10 @@
         "future": "cpp",
         "shared_mutex": "cpp",
         "cinttypes": "cpp",
-        "typeindex": "cpp"
+        "typeindex": "cpp",
+        "forward_list": "cpp",
+        "valarray": "cpp",
+        "pqxx": "cpp",
+        "ranges": "cpp"
     }
 }

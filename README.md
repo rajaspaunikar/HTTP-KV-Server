@@ -83,6 +83,12 @@ Ensure `libpqxx-dev` is installed, then compile the server:
 g++ server.cpp -o server -std=c++17 -I. -lpqxx -lpq -pthread -O2
 ```
 
+## Compile Load Generator
+
+```bash
+g++ -std=c++17 load_generator.cpp -o load_gen -lpthread
+```
+
 This produces an executable named `server`. Repeat similar steps for `load_gen.cpp` if building the client load generator.
 
 ## Environment Setup

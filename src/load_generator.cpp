@@ -9,7 +9,7 @@
 #include <mutex>
 
 #include "../include/httplib.h"
-#include "../include/json.hpp"
+#include "../include/json.hpp"   
 
 using json = nlohmann::json;
 using namespace std::chrono;
@@ -17,6 +17,9 @@ using namespace std::chrono;
 // --- Configuration Constants ---
 const std::string SERVER_HOST = "localhost";
 const int SERVER_PORT = 8080;
+
+// Make payload size configurable here
+const size_t PAYLOAD_BYTES = 4096; // 4 KB payloads; increase if you want more IO
 
 // --- Workload Types ---
 enum WorkloadType {
@@ -29,7 +32,7 @@ enum WorkloadType {
 // --- Per-Thread Statistics ---
 struct ThreadStats {
     long long request_count = 0;
-    long long total_latency_us = 0; // Microseconds to prevent overflow/precision loss
+    long long total_latency_us = 0; // Microseconds
     long long errors = 0;
 };
 
@@ -40,7 +43,7 @@ std::string random_string(size_t length) {
         "0123456789"
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         "abcdefghijklmnopqrstuvwxyz";
-    thread_local std::mt19937 rng(std::random_device{}());
+    thread_local std::mt19937 rng((std::random_device())());
     thread_local std::uniform_int_distribution<> dist(0, sizeof(charset) - 2);
     std::string s;
     s.reserve(length);
@@ -51,11 +54,12 @@ std::string random_string(size_t length) {
 }
 
 // --- Worker Function ---
-void worker_thread(int duration_sec, WorkloadType workload, ThreadStats& stats) {
+// Note: now takes thread_id for unique key naming
+void worker_thread(int thread_id, int duration_sec, WorkloadType workload, ThreadStats& stats) {
     // Each thread gets its own client to simulate a distinct user
     httplib::Client cli(SERVER_HOST, SERVER_PORT);
-    
-    // Set timeouts suitable for load testing
+
+    // Set timeouts suitable for load testing (seconds)
     cli.set_connection_timeout(2); 
     cli.set_read_timeout(5);
     cli.set_write_timeout(5);
@@ -63,73 +67,77 @@ void worker_thread(int duration_sec, WorkloadType workload, ThreadStats& stats) 
     // Random Number Generators
     std::random_device rd;
     std::mt19937 gen(rd());
-    
+
     // Ranges
     // For "Get All" we want a huge range to ensure cache misses.
-    std::uniform_int_distribution<> dist_huge(1, 1000000); 
-    // For "Get Popular" we want a tiny range to ensure cache hits (size < Cache Capacity).
-    // Your server cache capacity is 1 (very small), so we use range 1-1 to force hits, 
-    // or 1-5 to force some thrashing if capacity was larger. 
-    // Since server capacity is 1, let's stick to key "1" for max hits, or "1-3" for thrashing.
-    std::uniform_int_distribution<> dist_small(1, 1); 
+    std::uniform_int_distribution<> dist_huge(1, 10000000); 
+    // For "Get Popular" we want a range matching cache capacity (1..100)
+    std::uniform_int_distribution<> dist_small(1, 100); 
     
     std::uniform_int_distribution<> dist_mixed_op(0, 100); // For mixed percentages
+
+    uint64_t put_counter = 0; // per-thread counter for uniq keys
 
     auto start_time = high_resolution_clock::now();
     auto end_time = start_time + seconds(duration_sec);
 
     while (high_resolution_clock::now() < end_time) {
-        std::string method;
         std::string path;
-        std::string body;
-        
-        // 1. Request Generation Logic
-        int key_int;
+        int key_int = 0;
         std::string key_str;
-
-        // Determine Operation Type
         bool is_post = false;
         bool is_delete = false;
-        
+
+        // Determine Operation Type
         switch (workload) {
             case PUT_ALL:
-                // Always Create/Delete logic. Let's do pure Creates to stress Write IO
                 is_post = true;
                 key_int = dist_huge(gen);
                 break;
             case GET_ALL:
-                // Unique keys -> Cache Miss
                 key_int = dist_huge(gen); 
                 break;
             case GET_POPULAR:
-                // Same keys -> Cache Hit
                 key_int = dist_small(gen);
                 break;
-            case MIXED:
-                // 10% Delete, 40% Post, 50% Get
+            case MIXED: {
                 int op = dist_mixed_op(gen);
-                key_int = dist_huge(gen); // Mixed usually implies wider range
                 if (op < 10) is_delete = true;
                 else if (op < 50) is_post = true;
+                // Mixed mostly uses large keyspace to generate varied behavior
+                key_int = dist_huge(gen);
                 break;
+            }
+            default:
+                key_int = dist_huge(gen);
         }
 
-        key_str = "key_" + std::to_string(key_int);
-        
-        // 2. Execute Request
         auto req_start = high_resolution_clock::now();
         httplib::Result res;
 
         if (is_post) {
+            // Use unique keys for PUTs to maximize new-object disk writes
+            ++put_counter;
+            key_str = "key_t" + std::to_string(thread_id) + "_" + std::to_string(put_counter);
+
             json j;
             j["key"] = key_str;
-            j["value"] = random_string(50); // Payload 50 bytes
-            res = cli.Post("/kv", j.dump(), "application/json");
+            j["value"] = random_string(PAYLOAD_BYTES); // bigger payload
+
+            // Request headers: content-type + optional flush hint
+            httplib::Headers headers = {
+                {"Content-Type", "application/json"},
+                {"X-Force-Flush", "1"} // server can choose to honor this to fsync
+            };
+
+            res = cli.Post("/kv", headers, j.dump(), "application/json");
         } else if (is_delete) {
+            key_str = "key_" + std::to_string(key_int);
             path = "/kv/" + key_str;
             res = cli.Delete(path.c_str());
         } else {
             // GET
+            key_str = "key_" + std::to_string(key_int);
             path = "/kv/" + key_str;
             res = cli.Get(path.c_str());
         }
@@ -145,21 +153,26 @@ void worker_thread(int duration_sec, WorkloadType workload, ThreadStats& stats) 
             // Count network errors or server crashes
             stats.errors++;
         }
-        // Note: We don't count 404 as an error. In "Get All", 404 is a valid response 
-        // proving the DB was checked.
+        // Note: 404 is not counted as an error (valid miss)
     }
 }
 
 // --- Pre-population Helper ---
-// If we run "Get Popular", the keys MUST exist in the DB/Cache to be meaningful.
+// For GET_POPULAR: prepopulate keys 1..100 so cache-hot set matches capacity
 void prepopulate_popular_keys() {
-    std::cout << "[Setup] Pre-populating popular keys for Cache Hit workload..." << std::endl;
+    std::cout << "[Setup] Pre-populating 100 popular keys for Cache Hit workload..." << std::endl;
     httplib::Client cli(SERVER_HOST, SERVER_PORT);
-    // Matches dist_small in worker_thread
-    for(int i=1; i<=5; i++) { 
+    for (int i = 1; i <= 100; ++i) {
         std::string key = "key_" + std::to_string(i);
-        json j = {{"key", key}, {"value", "prepopulated_value_for_cpu_test"}};
-        cli.Post("/kv", j.dump(), "application/json");
+        json j = { {"key", key}, {"value", std::string("prepopulated_value_") + std::to_string(i)} };
+        httplib::Headers headers = {
+            {"Content-Type", "application/json"},
+            {"X-Force-Flush", "1"}
+        };
+        auto res = cli.Post("/kv", headers, j.dump(), "application/json");
+        if (!res || res->status >= 500) {
+            std::cerr << "[Setup] Warning: prepopulate POST failed for " << key << std::endl;
+        }
     }
     std::cout << "[Setup] Done." << std::endl;
 }
@@ -189,14 +202,15 @@ int main(int argc, char* argv[]) {
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "Starting Load Test" << std::endl;
     std::cout << "Threads: " << num_threads << " | Duration: " << duration << "s | Workload: " << workload_input << std::endl;
+    std::cout << "Payload per PUT: " << PAYLOAD_BYTES << " bytes" << std::endl;
     std::cout << "------------------------------------------------" << std::endl;
 
     std::vector<std::thread> threads;
     std::vector<ThreadStats> all_stats(num_threads);
 
-    // Start Threads
+    // Start Threads (pass thread id as first arg)
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back(worker_thread, duration, workload, std::ref(all_stats[i]));
+        threads.emplace_back(worker_thread, i /*thread id*/, duration, workload, std::ref(all_stats[i]));
     }
 
     // Wait for Threads

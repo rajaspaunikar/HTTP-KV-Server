@@ -1,0 +1,16 @@
+------------------------------------------------
+Starting Load Test
+Threads: 4 | Duration: 300s | Workload: 1
+------------------------------------------------
+
+=== Performance Results ===
+Total Requests:      156622
+Successful Requests: 156622
+Errors:              0
+---------------------------
+Average Throughput:    522.07 req/sec
+Average Response Time: 7.660 ms
+===========================
+Server CPU Utilization: 74.69
+Disk Writes/Sec: 36.20
+Disk Utilization: 12.46

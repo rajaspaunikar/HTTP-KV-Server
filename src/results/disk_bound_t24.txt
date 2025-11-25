@@ -1,0 +1,17 @@
+------------------------------------------------
+Starting Load Test
+Threads: 24 | Duration: 300s | Workload: 1
+Payload per PUT: 4096 bytes
+------------------------------------------------
+
+=== Performance Results ===
+Total Requests:      164283
+Successful Requests: 159446
+Errors:              4837
+---------------------------
+Average Throughput:    547.61 req/sec
+Average Response Time: 43.835 ms
+===========================
+Server CPU Utilization: 79.08
+Disk Writes/Sec: 128.22
+Disk Utilization: 63.48

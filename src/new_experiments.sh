@@ -91,15 +91,15 @@ run_test() {
 }
 
 # --- EXPERIMENT 1: CPU BOUND (Get Popular) ---
-echo ">>> STARTING CPU BOUND EXPERIMENTS (GET POPULAR) <<<"
-for t in 1 2 3 4 5 6 7 8 12 24 32
-do
-   run_test $t 3 "cpu_bound"
-done
+# echo ">>> STARTING CPU BOUND EXPERIMENTS (GET POPULAR) <<<"
+# for t in 16
+# do
+#    run_test $t 3 "cpu_bound"
+# done
 
 # --- EXPERIMENT 2: DISK BOUND (Put All) ---
 echo ">>> STARTING DISK BOUND EXPERIMENTS (PUT ALL) <<<"
-for t in 1 2 3 4 5 6 7 8 12 24 32
+for t in 1 2 3 4 5 6 7 8 12 16 24 32
 do
    run_test $t 1 "disk_bound"
 done

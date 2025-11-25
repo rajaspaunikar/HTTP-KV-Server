@@ -5,13 +5,13 @@ Payload per PUT: 4096 bytes
 ------------------------------------------------
 
 === Performance Results ===
-Total Requests:      131234
-Successful Requests: 131234
+Total Requests:      48858
+Successful Requests: 48858
 Errors:              0
 ---------------------------
-Average Throughput:    437.45 req/sec
-Average Response Time: 13.720 ms
+Average Throughput:    162.86 req/sec
+Average Response Time: 36.879 ms
 ===========================
-Server CPU Utilization: 63.24
-Disk Writes/Sec: 152.21
-Disk Utilization: 81.47
+Server CPU Utilization: 26.15
+Disk Writes/Sec: 125.15
+Disk Utilization: 79.45

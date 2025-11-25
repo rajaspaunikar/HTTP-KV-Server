@@ -1,0 +1,19 @@
+[Setup] Pre-populating 100 popular keys for Cache Hit workload...
+[Setup] Done.
+------------------------------------------------
+Starting Load Test
+Threads: 16 | Duration: 300s | Workload: 3
+Payload per PUT: 4096 bytes
+------------------------------------------------
+
+=== Performance Results ===
+Total Requests:      5217842
+Successful Requests: 5217839
+Errors:              3
+---------------------------
+Average Throughput:    17392.81 req/sec
+Average Response Time: 0.919 ms
+===========================
+Server CPU Utilization: 99.59
+Disk Writes/Sec: 2.68
+Disk Utilization: 1.32
